@@ -16,6 +16,14 @@ SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 
 def event_extractor(calendar_id: str, service, date_from: str,
                     date_to: str = datetime.datetime.today().strftime('%Y-%m-%d')) -> pd.DataFrame:
+    """
+    Extract all events from calendar in interval
+    :param calendar_id: id of the calendar, see examples.py
+    :param service: google object
+    :param date_from: date from
+    :param date_to: date to
+    :return: dataframe
+    """
     datetime_from = datetime.datetime.strptime(date_from, '%Y-%m-%d').isoformat() + 'Z'
     datetime_to = datetime.datetime.strptime(date_to, '%Y-%m-%d').isoformat() + 'Z'
 
@@ -29,7 +37,26 @@ def event_extractor(calendar_id: str, service, date_from: str,
         end = event['end'].get('dateTime', event['end'].get('date'))
         row = {'start': start, 'end': end, 'summary': event['summary']}
         df = pd.concat([df, pd.DataFrame([row])], axis=0, ignore_index=True)
+
     return df
+
+
+def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate some stat for period data
+    :param df:
+    :return:
+    """
+    df.sort_values('start', inplace=True)
+    df[['start', 'end']] = df[['start', 'end']].apply(pd.to_datetime)
+    df['duration'] = (df['end'] - df['start']).dt.days + 1
+    df['real_period'] = df['duration'].apply(lambda x: 1 if x >= 3 else 0)
+    df['previous_start'] = df.groupby(['real_period'])['start'].shift(1)
+    df['period'] = df.apply(lambda row:
+                            (row['start'] - row['previous_start']).days
+                            if row['previous_start'] == row['previous_start'] and row['real_period'] == 1
+                            else None, axis=1)
+    return df.drop('previous_start', axis=1)
 
 
 def main(calendar_id: str):
@@ -56,7 +83,8 @@ def main(calendar_id: str):
 
     try:
         service = build('calendar', 'v3', credentials=creds)
-        df = event_extractor(calendar_id=calendar_id, service=service, date_from='2021-01-01')
+        df_raw = event_extractor(calendar_id=calendar_id, service=service, date_from='2020-01-01')
+        df = period_analysis(df=df_raw)
         print(df)
 
     except HttpError as error:
