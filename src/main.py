@@ -1,8 +1,9 @@
-from __future__ import print_function
+# from __future__ import print_function
 
 import datetime
 import os.path
 import pandas as pd
+import logging
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -11,7 +12,11 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # If modifying these scopes, delete the file token.json.
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+SCOPES = ['https://www.googleapis.com/auth/calendar']  # TODO: сделать два скоупа и два крелдса
+CALENDAR_RED: str = 'miemagrq7j7e3rfb7q333u794g@group.calendar.google.com'
+CALENDAR_RED_DAYS: str = '5142218fae4bc3ca21bb8de33ae7516fea914eb0a3d2b171816a7a1e58716ddb@group.calendar.google.com'
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 def event_extractor(calendar_id: str, service, date_from: str,
@@ -38,14 +43,13 @@ def event_extractor(calendar_id: str, service, date_from: str,
         row = {'start': start, 'end': end, 'summary': event['summary']}
         df = pd.concat([df, pd.DataFrame([row])], axis=0, ignore_index=True)
 
+    logging.info(f'event_extractor end with {df.shape}')
     return df
 
 
 def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate some stat for period data
-    :param df:
-    :return:
     """
     df.sort_values('start', inplace=True)
     df[['start', 'end']] = df[['start', 'end']].apply(pd.to_datetime)
@@ -53,13 +57,73 @@ def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df['real_period'] = df['duration'].apply(lambda x: 1 if x >= 3 else 0)
     df['previous_start'] = df.groupby(['real_period'])['start'].shift(1)
     df['period'] = df.apply(lambda row:
-                            (row['start'] - row['previous_start']).days
+                            int((row['start'] - row['previous_start']).days)
                             if row['previous_start'] == row['previous_start'] and row['real_period'] == 1
                             else None, axis=1)
-    return df.drop('previous_start', axis=1)
+    # TODO: добавить тестов, что не среди 3ех последних записей нет провала
+    df_last_3_real_periods = df[df['real_period'] == 1].tail(3)
+    average_period = int(df_last_3_real_periods['period'].mean())
+    average_duration = int(df_last_3_real_periods['duration'].mean())
+
+    start_of_last_period = df_last_3_real_periods['start'].tail(1)
+    predicted_start = start_of_last_period + datetime.timedelta(days=average_period)
+    predicted_end = predicted_start + datetime.timedelta(days=average_duration)
+    predicted_event = [{'start': predicted_start, 'end': predicted_end, 'summary': 'prediction',
+                        'duration': average_duration, 'real_period': 1, 'previous_start': start_of_last_period,
+                        'period': average_period}]
+
+    pd_new = pd.concat([df, pd.DataFrame(data=predicted_event)]) #TODO: проверить форматы
+
+    logging.info(f'period_analysis end')
+    return df
 
 
-def main(calendar_id: str):
+def add_event(event_date: str, calendar_id, event_summary: str, service) -> None:
+    event = {
+        'summary': event_summary,
+        'start': {
+            'date': event_date,
+        },
+        'end': {
+            'date': event_date,
+        }}
+    event = service.events().insert(calendarId=calendar_id, body=event).execute()
+
+
+def delete_events(date_from: str, date_to: str, service) -> None:
+    """
+    Delete all events from the calendar CALENDAR_RED_DAYS in interval
+    """
+    page_token = None
+    while True:
+        events = service.events().list(calendarId=CALENDAR_RED_DAYS, pageToken=page_token).execute()
+        for event in events['items']:
+            event_datetime = event['start'].get('dateTime', event['start'].get('date'))
+            event_date = event_datetime[0:10]
+            event_id = event['id']
+            if date_to >= event_date >= date_from:
+                service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=event_id).execute()
+                print(f"Delete event = {event['summary']}, date = {event_date}, {event_id}")
+        page_token = events.get('nextPageToken')
+        if not page_token:
+            break
+
+
+def day_of_period_calculation(df: pd.DataFrame, period_date_from: str, service) -> None:
+    df = df[df['previous_start'] >= datetime.datetime.strptime(period_date_from, '%Y-%m-%d')]
+    for index, row in df.iterrows():
+        for i in range(int(row['period'])):
+            prev_start = row['previous_start']
+            event_date = (prev_start + datetime.timedelta(days=i)).strftime('%Y-%m-%d')
+            print(f"Start is {prev_start}, day number is {i + 1}, day is {event_date} for {service}")
+            """
+            add_event(event_date=event_date, calendar_id=CALENDAR_RED_DAYS,
+                      event_summary=f'Period = {i}',
+                      service=service)
+            """
+
+
+def main(calendar_id: str, date_from: str):
     """
     Do all work
     """
@@ -83,13 +147,17 @@ def main(calendar_id: str):
 
     try:
         service = build('calendar', 'v3', credentials=creds)
-        df_raw = event_extractor(calendar_id=calendar_id, service=service, date_from='2020-01-01')
+        df_raw = event_extractor(calendar_id=calendar_id, service=service, date_from=date_from)
         df = period_analysis(df=df_raw)
-        print(df)
+        df.to_csv("period_analysis.csv", index=False)
+        logging.info(f'period_analysis saved to csv end')
+        day_of_period_calculation(df=df, period_date_from=date_from, service=service)
 
     except HttpError as error:
-        print('An error occurred: %s' % error)
+        logging.error(f'An error occurred: {error}')
+    finally:
+        logging.info(f'main end')
 
 
 if __name__ == '__main__':
-    main(calendar_id='miemagrq7j7e3rfb7q333u794g@group.calendar.google.com')
+    main(calendar_id=CALENDAR_RED, date_from='2022-11-01')
