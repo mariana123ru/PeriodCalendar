@@ -36,14 +36,15 @@ def event_extractor(calendar_id: str, service, date_from: str,
                                           singleEvents=True, orderBy='startTime').execute()
     events = events_result.get('items', [])
 
-    df = pd.DataFrame(columns=['start', 'end', 'summary'])
+    df = pd.DataFrame(columns=['start', 'end', 'summary'], data=None)
+
     for event in events:
-        start = event['start'].get('dateTime', event['start'].get('date'))
-        end = event['end'].get('dateTime', event['end'].get('date'))
+        start = event['start'].get('date', event['start'].get('date'))
+        end = event['end'].get('date', event['end'].get('date'))
         row = {'start': start, 'end': end, 'summary': event['summary']}
         df = pd.concat([df, pd.DataFrame([row])], axis=0, ignore_index=True)
 
-    logging.info(f'event_extractor end with {df.shape}')
+    logging.info(f'event_extractor end with {df.shape[0]}')
     return df
 
 
@@ -56,25 +57,32 @@ def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df['duration'] = (df['end'] - df['start']).dt.days + 1
     df['real_period'] = df['duration'].apply(lambda x: 1 if x >= 3 else 0)
     df['previous_start'] = df.groupby(['real_period'])['start'].shift(1)
+
     df['period'] = df.apply(lambda row:
-                            int((row['start'] - row['previous_start']).days)
+                            (row['start'] - row['previous_start']).days
                             if row['previous_start'] == row['previous_start'] and row['real_period'] == 1
                             else None, axis=1)
+    logging.info(f'period_analysis end')
+    return df
+
+
+def period_prediction(df: pd.DataFrame) -> pd.DataFrame:
     # TODO: добавить тестов, что не среди 3ех последних записей нет провала
-    df_last_3_real_periods = df[df['real_period'] == 1].tail(3)
+    df_last_3_real_periods = df[df['real_period'] == 1].tail(3).copy()
     average_period = int(df_last_3_real_periods['period'].mean())
     average_duration = int(df_last_3_real_periods['duration'].mean())
 
-    start_of_last_period = df_last_3_real_periods['start'].tail(1)
+    start_of_last_period = df_last_3_real_periods['start'].tail(1).iloc[0]
     predicted_start = start_of_last_period + datetime.timedelta(days=average_period)
     predicted_end = predicted_start + datetime.timedelta(days=average_duration)
+
     predicted_event = [{'start': predicted_start, 'end': predicted_end, 'summary': 'prediction',
                         'duration': average_duration, 'real_period': 1, 'previous_start': start_of_last_period,
                         'period': average_period}]
 
-    pd_new = pd.concat([df, pd.DataFrame(data=predicted_event)]) #TODO: проверить форматы
+    df = pd.concat([df, pd.DataFrame(data=predicted_event)]).reset_index().drop('index', axis=1)
 
-    logging.info(f'period_analysis end')
+    logging.info(f'period_prediction end')
     return df
 
 
@@ -109,18 +117,24 @@ def delete_events(date_from: str, date_to: str, service) -> None:
             break
 
 
-def day_of_period_calculation(df: pd.DataFrame, period_date_from: str, service) -> None:
-    df = df[df['previous_start'] >= datetime.datetime.strptime(period_date_from, '%Y-%m-%d')]
+def day_of_period_calculation(df: pd.DataFrame, service) -> None:
+    df = df.tail(2)
     for index, row in df.iterrows():
         for i in range(int(row['period'])):
-            prev_start = row['previous_start']
-            event_date = (prev_start + datetime.timedelta(days=i)).strftime('%Y-%m-%d')
-            print(f"Start is {prev_start}, day number is {i + 1}, day is {event_date} for {service}")
-            """
-            add_event(event_date=event_date, calendar_id=CALENDAR_RED_DAYS,
-                      event_summary=f'Period = {i}',
-                      service=service)
-            """
+            event_date = (row['previous_start'] + datetime.timedelta(days=i)).strftime('%Y-%m-%d')
+            period_day_threshold = row['duration']
+            ovulation_days = int(row['period'] / 2) - 1
+            if i < period_day_threshold:
+                summary = f'Active, period day = {i + 1}'
+            elif abs(i - ovulation_days) <= 1:
+                summary = f'Ovulation, period day = {i + 1}'
+            else:
+                summary = f'Just day, period day = {i + 1}'
+            if row['summary'] == 'prediction':
+                summary = 'Prediction ' + summary
+            # print(f"{event_date} - {summary}")
+            add_event(event_date=event_date, calendar_id=CALENDAR_RED_DAYS, event_summary=summary, service=service)
+    print(f"day_of_period_calculation end")
 
 
 def main(calendar_id: str, date_from: str):
@@ -149,9 +163,9 @@ def main(calendar_id: str, date_from: str):
         service = build('calendar', 'v3', credentials=creds)
         df_raw = event_extractor(calendar_id=calendar_id, service=service, date_from=date_from)
         df = period_analysis(df=df_raw)
-        df.to_csv("period_analysis.csv", index=False)
-        logging.info(f'period_analysis saved to csv end')
-        day_of_period_calculation(df=df, period_date_from=date_from, service=service)
+        df = period_prediction(df=df)
+        df = period_prediction(df=df)
+        day_of_period_calculation(df=df, service=service)
 
     except HttpError as error:
         logging.error(f'An error occurred: {error}')
@@ -161,3 +175,5 @@ def main(calendar_id: str, date_from: str):
 
 if __name__ == '__main__':
     main(calendar_id=CALENDAR_RED, date_from='2022-11-01')
+
+# delete_events(date_from='2022-01-01', date_to='2024-01-01', service=service)
