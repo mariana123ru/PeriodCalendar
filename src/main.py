@@ -15,6 +15,8 @@ from googleapiclient.errors import HttpError
 SCOPES = ['https://www.googleapis.com/auth/calendar']  # TODO: сделать два скоупа и два крелдса
 CALENDAR_RED: str = 'miemagrq7j7e3rfb7q333u794g@group.calendar.google.com'
 CALENDAR_RED_DAYS: str = '5142218fae4bc3ca21bb8de33ae7516fea914eb0a3d2b171816a7a1e58716ddb@group.calendar.google.com'
+TOKEN_PATH = '../resources/token.json'  # TOKEN_PATH = 'resources/token.json'
+CREDS_PATH = '../resources/credentials.json'  # CREDS_PATH = 'resources/credentials.json'
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -40,8 +42,10 @@ def event_extractor(calendar_id: str, service, date_from: str,
 
     for event in events:
         start = event['start'].get('date', event['start'].get('date'))
+        start_dt = datetime.datetime.strptime(start, '%Y-%m-%d')
         end = event['end'].get('date', event['end'].get('date'))
-        row = {'start': start, 'end': end, 'summary': event['summary']}
+        end_dt = datetime.datetime.strptime(end, '%Y-%m-%d')
+        row = {'start': start_dt, 'end': end_dt, 'summary': event['summary']}
         df = pd.concat([df, pd.DataFrame([row])], axis=0, ignore_index=True)
 
     logging.info(f'event_extractor end with {df.shape[0]}')
@@ -53,75 +57,100 @@ def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
     Calculate some stat for period data
     """
     df.sort_values('start', inplace=True)
-    df[['start', 'end']] = df[['start', 'end']].apply(pd.to_datetime)
     df['duration'] = (df['end'] - df['start']).dt.days + 1
-    df['real_period'] = df['duration'].apply(lambda x: 1 if x >= 3 else 0)
-    df['previous_start'] = df.groupby(['real_period'])['start'].shift(1)
+    df['is_valid_period'] = df['duration'].apply(lambda x: 1 if x >= 3 else 0)
+    df['next_start'] = df.groupby(['is_valid_period'])['start'].shift(-1)
 
     df['period'] = df.apply(lambda row:
-                            (row['start'] - row['previous_start']).days
-                            if row['previous_start'] == row['previous_start'] and row['real_period'] == 1
-                            else None, axis=1)
+                            int((row['next_start'] - row['start']).days)
+                            if row['next_start'] == row['next_start'] and row['is_valid_period'] == 1
+                            else -1, axis=1)
+
     logging.info(f'period_analysis end')
     return df
 
 
-def period_prediction(df: pd.DataFrame) -> pd.DataFrame:
-    # TODO: добавить тестов, что не среди 3ех последних записей нет провала
-    df_last_3_real_periods = df[df['real_period'] == 1].tail(3).copy()
-    average_period = int(df_last_3_real_periods['period'].mean())
-    average_duration = int(df_last_3_real_periods['duration'].mean())
+def period_predictions(df: pd.DataFrame, number_of_periods_to_predict: int = 2) -> pd.DataFrame:
+    # TODO: добавить тестов, что не среди 4ех последних записей нет провала
+    df_last_4_valid_periods = df[df['is_valid_period'] == 1].tail(4).copy()
+    df_last_3_full_valid_periods = df_last_4_valid_periods.head(3).copy()
+    average_period = int(df_last_3_full_valid_periods['period'].mean())
+    average_duration = int(df_last_3_full_valid_periods['duration'].mean())
 
-    start_of_last_period = df_last_3_real_periods['start'].tail(1).iloc[0]
-    predicted_start = start_of_last_period + datetime.timedelta(days=average_period)
-    predicted_end = predicted_start + datetime.timedelta(days=average_duration)
+    df_last_4_valid_periods.iloc[3, df_last_4_valid_periods.columns.get_loc('period')] = average_period
+    df_last_4_valid_periods.iloc[3, df_last_4_valid_periods.columns.get_loc('next_start')] = \
+        df_last_4_valid_periods.iloc[3]['start'] + datetime.timedelta(days=average_period)
 
-    predicted_event = [{'start': predicted_start, 'end': predicted_end, 'summary': 'prediction',
-                        'duration': average_duration, 'real_period': 1, 'previous_start': start_of_last_period,
-                        'period': average_period}]
+    df_last_row = df_last_4_valid_periods.tail(1).copy()
+    df_res = df_last_4_valid_periods.copy()
 
-    df = pd.concat([df, pd.DataFrame(data=predicted_event)]).reset_index().drop('index', axis=1)
-
-    logging.info(f'period_prediction end')
-    return df
+    for i in range(number_of_periods_to_predict):
+        df_last_row.iloc[0, df_last_row.columns.get_loc('start')] = df_last_row.iloc[
+            0, df_last_row.columns.get_loc('next_start')]
+        df_last_row.iloc[0, df_last_row.columns.get_loc('end')] = df_last_row.iloc[
+                                                                      0, df_last_row.columns.get_loc(
+                                                                          'start')] + datetime.timedelta(
+            days=average_duration)
+        df_last_row.iloc[0, df_last_row.columns.get_loc('summary')] = f'Prediction {i + 1}'
+        df_last_row.iloc[0, df_last_row.columns.get_loc('duration')] = average_duration
+        df_last_row.iloc[0, df_last_row.columns.get_loc('is_valid_period')] = 1
+        df_last_row.iloc[0, df_last_row.columns.get_loc('next_start')] = df_last_row.iloc[
+                                                                             0, df_last_row.columns.get_loc(
+                                                                                 'start')] + datetime.timedelta(
+            days=average_period)
+        df_last_row.iloc[0, df_last_row.columns.get_loc('period')] = average_period
+        df_res = pd.concat([df_res, df_last_row])
+    logging.info(f'period_predictions end')
+    return df_res.reset_index().drop('index', axis=1)
 
 
 def add_event(event_date: str, calendar_id, event_summary: str, service) -> None:
+    """
+    Add event to the calendar. It's important for one-day event to set up the end date on a different date
+    """
+    event_date_plus_one = (datetime.datetime.strptime(event_date, '%Y-%m-%d') +
+                           datetime.timedelta(days=1)).strftime('%Y-%m-%d')
     event = {
         'summary': event_summary,
         'start': {
             'date': event_date,
         },
         'end': {
-            'date': event_date,
+            'date': event_date_plus_one,
         }}
-    event = service.events().insert(calendarId=calendar_id, body=event).execute()
+    service.events().insert(calendarId=calendar_id, body=event).execute()
 
 
-def delete_events(date_from: str, date_to: str, service) -> None:
+def delete_events(date_from: datetime.datetime, service) -> None:
     """
-    Delete all events from the calendar CALENDAR_RED_DAYS in interval
+    Delete all events from the calendar CALENDAR_RED_DAYS in after date_from
     """
     page_token = None
     while True:
         events = service.events().list(calendarId=CALENDAR_RED_DAYS, pageToken=page_token).execute()
         for event in events['items']:
-            event_datetime = event['start'].get('dateTime', event['start'].get('date'))
-            event_date = event_datetime[0:10]
-            event_id = event['id']
-            if date_to >= event_date >= date_from:
-                service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=event_id).execute()
-                print(f"Delete event = {event['summary']}, date = {event_date}, {event_id}")
+            if len(event) > 0:
+                event_datetime = event['start'].get('dateTime', event['start'].get('date'))
+                event_date = datetime.datetime.strptime(event_datetime[0:10], '%Y-%m-%d')
+                event_id = event['id']
+                if event_date >= date_from:
+                    service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=event_id).execute()
+                    print(f"Delete event = {event['summary']}, date = {event_date}")
+            else:
+                break
         page_token = events.get('nextPageToken')
         if not page_token:
             break
 
 
-def day_of_period_calculation(df: pd.DataFrame, service) -> None:
-    df = df.tail(2)
+def day_of_period_calculation(df: pd.DataFrame, date_from: datetime, service) -> None:
+    """
+    For each day after date_from from df calculate day of period
+    """
+    df = df[df['start'] >= date_from]
     for index, row in df.iterrows():
         for i in range(int(row['period'])):
-            event_date = (row['previous_start'] + datetime.timedelta(days=i)).strftime('%Y-%m-%d')
+            event_date = (row['start'] + datetime.timedelta(days=i)).strftime('%Y-%m-%d')
             period_day_threshold = row['duration']
             ovulation_days = int(row['period'] / 2) - 1
             if i < period_day_threshold:
@@ -130,50 +159,65 @@ def day_of_period_calculation(df: pd.DataFrame, service) -> None:
                 summary = f'Ovulation, period day = {i + 1}'
             else:
                 summary = f'Just day, period day = {i + 1}'
-            if row['summary'] == 'prediction':
-                summary = 'Prediction ' + summary
-            # print(f"{event_date} - {summary}")
+            if row['summary'][:10] == 'Prediction':
+                summary = row['summary'] + ': ' + summary
+            print(f"{event_date} - {summary}")
             add_event(event_date=event_date, calendar_id=CALENDAR_RED_DAYS, event_summary=summary, service=service)
-    print(f"day_of_period_calculation end")
+    print(f"day_of_period_calculation end, date from = {date_from}")
+
+
+def delete_predictions_after_period_input(df: pd.DataFrame, service) -> datetime:
+    """
+    Delete events from the last real start date
+    """
+    date_from = df.tail(1)['start'][4]
+    delete_events(date_from=date_from, service=service)
+    print(f"delete_predictions_after_period_input end, date from = {date_from}")
+    return date_from
+
+
+def build_service():
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+    if os.path.exists(TOKEN_PATH):
+        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(CREDS_PATH, SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open(TOKEN_PATH, 'w') as token:
+            token.write(creds.to_json())
+    try:
+        service = build('calendar', 'v3', credentials=creds)
+    except HttpError as error:
+        logging.error(f'An error occurred: {error}')
+    finally:
+        logging.info(f'authorization_by_token end')
+        return service
 
 
 def main(calendar_id: str, date_from: str):
     """
     Do all work
     """
-    creds = None
-    # The file token.json stores the user's access and refresh tokens, and is
-    # created automatically when the authorization flow completes for the first
-    # time.
-    if os.path.exists('../resources/token.json'):
-        creds = Credentials.from_authorized_user_file('../resources/token.json', SCOPES)
-    # If there are no (valid) credentials available, let the user log in.
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                '../resources/credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
-        with open('../resources/token.json', 'w') as token:
-            token.write(creds.to_json())
+    service = build_service()
 
-    try:
-        service = build('calendar', 'v3', credentials=creds)
-        df_raw = event_extractor(calendar_id=calendar_id, service=service, date_from=date_from)
-        df = period_analysis(df=df_raw)
-        df = period_prediction(df=df)
-        df = period_prediction(df=df)
-        day_of_period_calculation(df=df, service=service)
+    df_red_events = event_extractor(calendar_id=calendar_id, service=service, date_from=date_from)
+    df_red_events = period_analysis(df=df_red_events)
+    df_events_and_preds = period_predictions(df=df_red_events, number_of_periods_to_predict=2)
 
-    except HttpError as error:
-        logging.error(f'An error occurred: {error}')
-    finally:
-        logging.info(f'main end')
+    date_for_calculation = delete_predictions_after_period_input(df=df_red_events, service=service)
+    # date_for_calculation = date_from # TODO: убрать
+
+    day_of_period_calculation(df=df_events_and_preds, date_from=date_for_calculation, service=service)
 
 
 if __name__ == '__main__':
     main(calendar_id=CALENDAR_RED, date_from='2022-11-01')
-
-# delete_events(date_from='2022-01-01', date_to='2024-01-01', service=service)
+    #delete_events(date_from=datetime.datetime(2022, 11, 1), service=service)
