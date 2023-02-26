@@ -1,4 +1,6 @@
-import datetime
+from datetime import datetime
+from datetime import timedelta
+
 import os.path
 import pandas as pd
 import logging
@@ -20,8 +22,7 @@ CREDS_PATH = '../resources/credentials.json'  # CREDS_PATH = 'resources/credenti
 logging.basicConfig(level=logging.DEBUG)
 
 
-def event_extractor(calendar_id: str, service, date_from: str,
-                    date_to: str = datetime.datetime.today().strftime('%Y-%m-%d')) -> pd.DataFrame:
+def event_extractor(calendar_id: str, service, date_from: str) -> pd.DataFrame:
     """
     Extract all events from calendar in interval
     :param calendar_id: id of the calendar, see examples.py
@@ -30,8 +31,8 @@ def event_extractor(calendar_id: str, service, date_from: str,
     :param date_to: date to
     :return: dataframe
     """
-    datetime_from = datetime.datetime.strptime(date_from, '%Y-%m-%d').isoformat() + 'Z'
-    datetime_to = datetime.datetime.strptime(date_to, '%Y-%m-%d').isoformat() + 'Z'
+    datetime_to = (datetime.today() + timedelta(days=14)).isoformat() + 'Z'
+    datetime_from = datetime.strptime(date_from, '%Y-%m-%d').isoformat() + 'Z'
 
     events_result = service.events().list(calendarId=calendar_id, timeMin=datetime_from, timeMax=datetime_to,
                                           singleEvents=True, orderBy='startTime').execute()
@@ -41,9 +42,9 @@ def event_extractor(calendar_id: str, service, date_from: str,
 
     for event in events:
         start = event['start'].get('date', event['start'].get('date'))
-        start_dt = datetime.datetime.strptime(start, '%Y-%m-%d')
+        start_dt = datetime.strptime(start, '%Y-%m-%d')
         end = event['end'].get('date', event['end'].get('date'))
-        end_dt = datetime.datetime.strptime(end, '%Y-%m-%d')
+        end_dt = datetime.strptime(end, '%Y-%m-%d')
         row = {'start': start_dt, 'end': end_dt, 'summary': event['summary']}
         df = pd.concat([df, pd.DataFrame([row])], axis=0, ignore_index=True)
 
@@ -78,7 +79,7 @@ def period_predictions(df: pd.DataFrame, number_of_periods_to_predict: int = 2) 
 
     df_last_4_valid_periods.iloc[3, df_last_4_valid_periods.columns.get_loc('period')] = average_period
     df_last_4_valid_periods.iloc[3, df_last_4_valid_periods.columns.get_loc('next_start')] = \
-        df_last_4_valid_periods.iloc[3]['start'] + datetime.timedelta(days=average_period)
+        df_last_4_valid_periods.iloc[3]['start'] + timedelta(days=average_period)
 
     df_last_row = df_last_4_valid_periods.tail(1).copy()
     df_res = df_last_4_valid_periods.copy()
@@ -88,14 +89,14 @@ def period_predictions(df: pd.DataFrame, number_of_periods_to_predict: int = 2) 
             0, df_last_row.columns.get_loc('next_start')]
         df_last_row.iloc[0, df_last_row.columns.get_loc('end')] = df_last_row.iloc[
                                                                       0, df_last_row.columns.get_loc(
-                                                                          'start')] + datetime.timedelta(
+                                                                          'start')] + timedelta(
             days=average_duration)
         df_last_row.iloc[0, df_last_row.columns.get_loc('summary')] = f'Prediction {i + 1}'
         df_last_row.iloc[0, df_last_row.columns.get_loc('duration')] = average_duration
         df_last_row.iloc[0, df_last_row.columns.get_loc('is_valid_period')] = 1
         df_last_row.iloc[0, df_last_row.columns.get_loc('next_start')] = df_last_row.iloc[
                                                                              0, df_last_row.columns.get_loc(
-                                                                                 'start')] + datetime.timedelta(
+                                                                                 'start')] + timedelta(
             days=average_period)
         df_last_row.iloc[0, df_last_row.columns.get_loc('period')] = average_period
         df_res = pd.concat([df_res, df_last_row])
@@ -107,8 +108,7 @@ def add_event(event_date: str, calendar_id, event_summary: str, service) -> None
     """
     Add event to the calendar. It's important for one-day event to set up the end date on a different date
     """
-    event_date_plus_one = (datetime.datetime.strptime(event_date, '%Y-%m-%d') +
-                           datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+    event_date_plus_one = (datetime.strptime(event_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
     event = {
         'summary': event_summary,
         'start': {
@@ -120,7 +120,7 @@ def add_event(event_date: str, calendar_id, event_summary: str, service) -> None
     service.events().insert(calendarId=calendar_id, body=event).execute()
 
 
-def delete_events(date_from: datetime.datetime, service) -> None:
+def delete_events(date_from: datetime, service) -> None:
     """
     Delete all events from the calendar CALENDAR_RED_DAYS in after date_from
     """
@@ -130,7 +130,7 @@ def delete_events(date_from: datetime.datetime, service) -> None:
         for event in events['items']:
             if len(event) > 0:
                 event_datetime = event['start'].get('dateTime', event['start'].get('date'))
-                event_date = datetime.datetime.strptime(event_datetime[0:10], '%Y-%m-%d')
+                event_date = datetime.strptime(event_datetime[0:10], '%Y-%m-%d')
                 event_id = event['id']
                 if event_date >= date_from:
                     service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=event_id).execute()
@@ -149,7 +149,7 @@ def day_of_period_calculation(df: pd.DataFrame, date_from: datetime, service) ->
     df = df[df['start'] >= date_from]
     for index, row in df.iterrows():
         for i in range(int(row['period'])):
-            event_date = (row['start'] + datetime.timedelta(days=i)).strftime('%Y-%m-%d')
+            event_date = (row['start'] + timedelta(days=i)).strftime('%Y-%m-%d')
             period_day_threshold = row['duration']
             ovulation_days = int(row['period'] / 2) - 1
             if i < period_day_threshold:
@@ -165,15 +165,17 @@ def day_of_period_calculation(df: pd.DataFrame, date_from: datetime, service) ->
     print(f"day_of_period_calculation end, date from = {date_from}")
 
 
-def delete_predictions_after_period_input(df: pd.DataFrame, service) -> datetime:
+def delete_predictions_after_period_input(df: pd.DataFrame, service, full_reboot: bool, date_from: datetime) -> datetime:
     """
     Delete events from the last real start date
     """
-    date_from = df.tail(1)['start'][4]
+    # Normal mode - remove all events after start date of second last real start date
+    if not full_reboot:
+        date_from = df.take([-2]).reset_index().drop('index', axis=1)['start'][0]
+    # In full reboot mode remove all events from the date_from
     delete_events(date_from=date_from, service=service)
     print(f"delete_predictions_after_period_input end, date from = {date_from}")
     return date_from
-
 
 def build_service():
     creds = None
@@ -201,7 +203,7 @@ def build_service():
         return service
 
 
-def main(calendar_id: str, date_from: str):
+def main(calendar_id: str, date_from: str, full_reboot: bool = False):
     """
     Do all work
     """
@@ -211,12 +213,12 @@ def main(calendar_id: str, date_from: str):
     df_red_events = period_analysis(df=df_red_events)
     df_events_and_preds = period_predictions(df=df_red_events, number_of_periods_to_predict=2)
 
-    date_for_calculation = delete_predictions_after_period_input(df=df_red_events, service=service)
-    # date_for_calculation = date_from # TODO: убрать
+    date_for_calculation = delete_predictions_after_period_input(df=df_red_events, service=service,
+                                                                 full_reboot=full_reboot, date_from=date_from)
 
     day_of_period_calculation(df=df_events_and_preds, date_from=date_for_calculation, service=service)
 
 
 if __name__ == '__main__':
     main(calendar_id=CALENDAR_RED, date_from='2022-11-01')
-    #delete_events(date_from=datetime.datetime(2022, 11, 1), service=service)
+    #delete_events(date_from=datetime(2022, 11, 1), service=service)
