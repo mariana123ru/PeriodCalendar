@@ -1,5 +1,3 @@
-# from __future__ import print_function
-
 import datetime
 import os.path
 import pandas as pd
@@ -13,6 +11,7 @@ from googleapiclient.errors import HttpError
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/calendar']  # TODO: сделать два скоупа и два крелдса
+#TODO: в режиме тестирования токен живет 7 дней, Token has been expired or revoked - перейти в прод?
 CALENDAR_RED: str = 'miemagrq7j7e3rfb7q333u794g@group.calendar.google.com'
 CALENDAR_RED_DAYS: str = '5142218fae4bc3ca21bb8de33ae7516fea914eb0a3d2b171816a7a1e58716ddb@group.calendar.google.com'
 TOKEN_PATH = '../resources/token.json'  # TOKEN_PATH = 'resources/token.json'
