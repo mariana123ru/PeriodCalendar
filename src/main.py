@@ -214,13 +214,18 @@ def change_cwd() -> None:
     """
     Change working directory if needed
     """
+    project_name = 'PeriodCalendar'
+
     work_dir: str = os.getcwd()
     print(f'Old working dir = {work_dir}')
-    project_name = 'PeriodCalendar'
-    period_index = work_dir.rfind(project_name)
-    new_work_dir = work_dir[:period_index + len(project_name)]
-    os.chdir(new_work_dir)
+    if work_dir != '/home/mariana123':
+        period_index = work_dir.rfind(project_name)
+        new_work_dir = work_dir[:period_index + len(project_name)]
+    else:
+        new_work_dir = '/home/mariana123/PeriodCalendar' # For pythoneverywhere
     print(f'New working dir = {os.getcwd()}')
+    os.chdir(new_work_dir)
+
 
 
 def main(calendar_id: str, date_from: str, full_reboot: bool = False):
