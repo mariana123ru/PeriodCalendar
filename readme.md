@@ -12,3 +12,5 @@ For venv activation
 Mode selection
 "'".\venv\Scripts\python.exe .\src\main.py --m 0" 
 
+For pythoneverywhere  - "python /home/mariana123/PeriodCalendar/src/main.py"
+
