@@ -4,6 +4,7 @@ from datetime import timedelta
 import os.path
 import pandas as pd
 import logging
+import argparse
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -13,11 +14,13 @@ from googleapiclient.errors import HttpError
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/calendar']  # TODO: сделать два скоупа и два крелдса
-#TODO: в режиме тестирования токен живет 7 дней, Token has been expired or revoked - перейти в прод?
+# TODO: в режиме тестирования токен живет 7 дней, Token has been expired or revoked - перейти в прод?
 CALENDAR_RED: str = 'miemagrq7j7e3rfb7q333u794g@group.calendar.google.com'
 CALENDAR_RED_DAYS: str = '5142218fae4bc3ca21bb8de33ae7516fea914eb0a3d2b171816a7a1e58716ddb@group.calendar.google.com'
-TOKEN_PATH = '../resources/token.json'  # TOKEN_PATH = 'resources/token.json'
-CREDS_PATH = '../resources/credentials.json'  # CREDS_PATH = 'resources/credentials.json'
+# TOKEN_PATH = '../resources/token.json' no source root, pycharm works
+TOKEN_PATH = 'resources/token.json'  # console
+# CREDS_PATH = '../resources/credentials.json'
+CREDS_PATH = 'resources/credentials.json'
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -156,6 +159,8 @@ def day_of_period_calculation(df: pd.DataFrame, date_from: datetime, service) ->
                 summary = f'Active, period day = {i + 1}'
             elif abs(i - ovulation_days) <= 1:
                 summary = f'Ovulation, period day = {i + 1}'
+            elif i >= row['period'] - 1:
+                summary = f'Be ready, period day = {i + 1}'
             else:
                 summary = f'Just day, period day = {i + 1}'
             if row['summary'][:10] == 'Prediction':
@@ -165,7 +170,8 @@ def day_of_period_calculation(df: pd.DataFrame, date_from: datetime, service) ->
     print(f"day_of_period_calculation end, date from = {date_from}")
 
 
-def delete_predictions_after_period_input(df: pd.DataFrame, service, full_reboot: bool, date_from: datetime) -> datetime:
+def delete_predictions_after_period_input(df: pd.DataFrame, service, full_reboot: bool,
+                                          date_from: datetime) -> datetime:
     """
     Delete events from the last real start date
     """
@@ -176,6 +182,7 @@ def delete_predictions_after_period_input(df: pd.DataFrame, service, full_reboot
     delete_events(date_from=date_from, service=service)
     print(f"delete_predictions_after_period_input end, date from = {date_from}")
     return date_from
+
 
 def build_service():
     creds = None
@@ -203,22 +210,47 @@ def build_service():
         return service
 
 
+def change_cwd() -> None:
+    """
+    Change working directory if needed
+    """
+    work_dir: str = os.getcwd()
+    print(f'Old working dir = {work_dir}')
+    project_name = 'PeriodCalendar'
+    period_index = work_dir.rfind(project_name)
+    new_work_dir = work_dir[:period_index + len(project_name)]
+    os.chdir(new_work_dir)
+    print(f'New working dir = {os.getcwd()}')
+
+
 def main(calendar_id: str, date_from: str, full_reboot: bool = False):
     """
     Do all work
     """
+    change_cwd()
+
     service = build_service()
 
     df_red_events = event_extractor(calendar_id=calendar_id, service=service, date_from=date_from)
     df_red_events = period_analysis(df=df_red_events)
-    df_events_and_preds = period_predictions(df=df_red_events, number_of_periods_to_predict=2)
+    df_events_and_predictions = period_predictions(df=df_red_events, number_of_periods_to_predict=2)
 
-    date_for_calculation = delete_predictions_after_period_input(df=df_red_events, service=service,
-                                                                 full_reboot=full_reboot, date_from=date_from)
+    parser = argparse.ArgumentParser(description='Script so useful.')
+    parser.add_argument("--m", type=int, default=1)
+    args = parser.parse_args()
+    normal_way = args.m
+    if normal_way == 1:
+        logging.info(f'Argument parser said the program run in a normal mode')
+        date_for_calculation = delete_predictions_after_period_input(df=df_red_events, service=service,
+                                                                     full_reboot=full_reboot, date_from=date_from)
 
-    day_of_period_calculation(df=df_events_and_preds, date_from=date_for_calculation, service=service)
+        day_of_period_calculation(df=df_events_and_predictions, date_from=date_for_calculation, service=service)
+
+    else:
+        logging.info(f'Argument parser said the program run in a simple mode')
+        print(df_events_and_predictions)
 
 
 if __name__ == '__main__':
     main(calendar_id=CALENDAR_RED, date_from='2022-11-01')
-    #delete_events(date_from=datetime(2022, 11, 1), service=service)
+    # delete_events(date_from=datetime(2022, 11, 1), service=service)
