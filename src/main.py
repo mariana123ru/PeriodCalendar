@@ -17,9 +17,7 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']  # TODO: сделать д
 # TODO: в режиме тестирования токен живет 7 дней, Token has been expired or revoked - перейти в прод?
 CALENDAR_RED: str = 'miemagrq7j7e3rfb7q333u794g@group.calendar.google.com'
 CALENDAR_RED_DAYS: str = '5142218fae4bc3ca21bb8de33ae7516fea914eb0a3d2b171816a7a1e58716ddb@group.calendar.google.com'
-# TOKEN_PATH = '../resources/token.json' no source root, pycharm works
-TOKEN_PATH = 'resources/token.json'  # console
-# CREDS_PATH = '../resources/credentials.json'
+TOKEN_PATH = 'resources/token.json'
 CREDS_PATH = 'resources/credentials.json'
 
 logging.basicConfig(level=logging.DEBUG)
@@ -74,7 +72,7 @@ def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def period_predictions(df: pd.DataFrame, number_of_periods_to_predict: int = 2) -> pd.DataFrame:
-    # TODO: добавить тестов, что не среди 4ех последних записей нет провала
+
     df_last_4_valid_periods = df[df['is_valid_period'] == 1].tail(4).copy()
     df_last_3_full_valid_periods = df_last_4_valid_periods.head(3).copy()
     average_period = int(df_last_3_full_valid_periods['period'].mean())
@@ -123,33 +121,12 @@ def add_event(event_date: str, calendar_id, event_summary: str, service) -> None
     service.events().insert(calendarId=calendar_id, body=event).execute()
 
 
-def delete_events(date_from: datetime, service) -> None:
-    """
-    Delete all events from the calendar CALENDAR_RED_DAYS in after date_from
-    """
-    page_token = None
-    while True:
-        events = service.events().list(calendarId=CALENDAR_RED_DAYS, pageToken=page_token).execute()
-        for event in events['items']:
-            if len(event) > 0:
-                event_datetime = event['start'].get('dateTime', event['start'].get('date'))
-                event_date = datetime.strptime(event_datetime[0:10], '%Y-%m-%d')
-                event_id = event['id']
-                if event_date >= date_from:
-                    service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=event_id).execute()
-                    print(f"Delete event = {event['summary']}, date = {event_date}")
-            else:
-                break
-        page_token = events.get('nextPageToken')
-        if not page_token:
-            break
-
-
-def day_of_period_calculation(df: pd.DataFrame, date_from: datetime, service) -> None:
+def day_of_period_calculation(df: pd.DataFrame, date_from: str) -> dict:
     """
     For each day after date_from from df calculate day of period
     """
     df = df[df['start'] >= date_from]
+    day_period_dict = dict()
     for index, row in df.iterrows():
         for i in range(int(row['period'])):
             event_date = (row['start'] + timedelta(days=i)).strftime('%Y-%m-%d')
@@ -165,23 +142,54 @@ def day_of_period_calculation(df: pd.DataFrame, date_from: datetime, service) ->
                 summary = f'Just day, period day = {i + 1}'
             if row['summary'][:10] == 'Prediction':
                 summary = row['summary'] + ': ' + summary
-            print(f"{event_date} - {summary}")
-            add_event(event_date=event_date, calendar_id=CALENDAR_RED_DAYS, event_summary=summary, service=service)
+
+            day_period_dict[event_date] = summary
     print(f"day_of_period_calculation end, date from = {date_from}")
+    return day_period_dict
 
 
-def delete_predictions_after_period_input(df: pd.DataFrame, service, full_reboot: bool,
-                                          date_from: datetime) -> datetime:
+def calculate_start_date_for_recreate_events(df: pd.DataFrame, full_reboot: bool, date_from: str) -> str:
     """
-    Delete events from the last real start date
+    @param df: dataframe without predictions
+    @param full_reboot: True - recreate all events
+    @param date_from: date from
+    @return: new date_from
     """
-    # Normal mode - remove all events after start date of second last real start date
     if not full_reboot:
-        date_from = df.take([-2]).reset_index().drop('index', axis=1)['start'][0]
-    # In full reboot mode remove all events from the date_from
-    delete_events(date_from=date_from, service=service)
-    print(f"delete_predictions_after_period_input end, date from = {date_from}")
+        df_valid_period = df[df['is_valid_period'] == 1]
+        date_from = df_valid_period.take([-2]).reset_index().drop('index', axis=1)['start'][0].strftime('%Y-%m-%d')
     return date_from
+
+
+def check_and_recreate_event(date_from: str, service, day_period_dict: dict) -> None:
+    """
+    Check all events from the calendar CALENDAR_RED_DAYS in after date_from and recreate if new event_summary
+    from the dict is not the same as old one
+    """
+    page_token = None
+    while True:
+        events = service.events().list(calendarId=CALENDAR_RED_DAYS, pageToken=page_token).execute()
+        for event in events['items']:
+            if len(event) > 0:
+                event_datetime = event['start'].get('dateTime', event['start'].get('date'))
+                event_date = event_datetime[0:10]
+                event_id = event['id']
+                event_summary = event['summary']
+                if event_date >= date_from:
+                    event_summary_new = day_period_dict[event_date]
+                    if event_summary_new != event_summary:
+                        print(f'Date {event_date}, old event = {event_summary}, new - {event_summary_new}, recreate!')
+                        service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=event_id).execute()
+                        print(f"Delete event = {event['summary']}, date = {event_date}")
+                        add_event(event_date=event_date, calendar_id=CALENDAR_RED_DAYS,
+                                  event_summary=event_summary_new, service=service)
+                    else:
+                        print(f'Date {event_date}, old event = {event_summary}, new is the same, do nothing')
+            else:
+                break
+        page_token = events.get('nextPageToken')
+        if not page_token:
+            break
 
 
 def build_service():
@@ -222,10 +230,9 @@ def change_cwd() -> None:
         period_index = work_dir.rfind(project_name)
         new_work_dir = work_dir[:period_index + len(project_name)]
     else:
-        new_work_dir = '/home/mariana123/PeriodCalendar' # For pythoneverywhere
+        new_work_dir = '/home/mariana123/PeriodCalendar'  # For pythoneverywhere
     print(f'New working dir = {os.getcwd()}')
     os.chdir(new_work_dir)
-
 
 
 def main(calendar_id: str, date_from: str, full_reboot: bool = False):
@@ -238,18 +245,22 @@ def main(calendar_id: str, date_from: str, full_reboot: bool = False):
 
     df_red_events = event_extractor(calendar_id=calendar_id, service=service, date_from=date_from)
     df_red_events = period_analysis(df=df_red_events)
+    date_from_recreate_events: str = calculate_start_date_for_recreate_events(df=df_red_events,
+                                                                              date_from=date_from,
+                                                                              full_reboot=full_reboot)
+
     df_events_and_predictions = period_predictions(df=df_red_events, number_of_periods_to_predict=2)
+
+    day_period_dict: dict = day_of_period_calculation(df=df_events_and_predictions, date_from=date_from_recreate_events)
 
     parser = argparse.ArgumentParser(description='Script so useful.')
     parser.add_argument("--m", type=int, default=1)
     args = parser.parse_args()
     normal_way = args.m
+
     if normal_way == 1:
         logging.info(f'Argument parser said the program run in a normal mode')
-        date_for_calculation = delete_predictions_after_period_input(df=df_red_events, service=service,
-                                                                     full_reboot=full_reboot, date_from=date_from)
-
-        day_of_period_calculation(df=df_events_and_predictions, date_from=date_for_calculation, service=service)
+        check_and_recreate_event(date_from=date_from_recreate_events, service=service, day_period_dict=day_period_dict)
 
     else:
         logging.info(f'Argument parser said the program run in a simple mode')
@@ -258,4 +269,3 @@ def main(calendar_id: str, date_from: str, full_reboot: bool = False):
 
 if __name__ == '__main__':
     main(calendar_id=CALENDAR_RED, date_from='2022-11-01')
-    # delete_events(date_from=datetime(2022, 11, 1), service=service)
