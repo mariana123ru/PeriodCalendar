@@ -72,6 +72,7 @@ def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def period_predictions(df: pd.DataFrame, number_of_periods_to_predict: int = 2) -> pd.DataFrame:
+    # TODO: Переписать нафиг
 
     df_last_4_valid_periods = df[df['is_valid_period'] == 1].tail(4).copy()
     df_last_3_full_valid_periods = df_last_4_valid_periods.head(3).copy()
@@ -161,35 +162,55 @@ def calculate_start_date_for_recreate_events(df: pd.DataFrame, full_reboot: bool
     return date_from
 
 
-def check_and_recreate_event(date_from: str, service, day_period_dict: dict) -> None:
+def check_and_recreate_event(date_from: str, service, day_period_dict: dict, full_reboot: bool) -> None:
     """
     Check all events from the calendar CALENDAR_RED_DAYS in after date_from and recreate if new event_summary
     from the dict is not the same as old one
     """
+    df_existing_events = pd.DataFrame(columns=['event_date', 'event_id', 'summary'], data=None)
+
     page_token = None
     while True:
         events = service.events().list(calendarId=CALENDAR_RED_DAYS, pageToken=page_token).execute()
         for event in events['items']:
-            if len(event) > 0:
-                event_datetime = event['start'].get('dateTime', event['start'].get('date'))
-                event_date = event_datetime[0:10]
-                event_id = event['id']
-                event_summary = event['summary']
-                if event_date >= date_from:
-                    event_summary_new = day_period_dict[event_date]
-                    if event_summary_new != event_summary:
-                        print(f'Date {event_date}, old event = {event_summary}, new - {event_summary_new}, recreate!')
-                        service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=event_id).execute()
-                        print(f"Delete event = {event['summary']}, date = {event_date}")
-                        add_event(event_date=event_date, calendar_id=CALENDAR_RED_DAYS,
-                                  event_summary=event_summary_new, service=service)
-                    else:
-                        print(f'Date {event_date}, old event = {event_summary}, new is the same, do nothing')
-            else:
-                break
+            event_date = event['start'].get('dateTime', event['start'].get('date'))[0:10]
+            row = {'event_date': event_date, 'event_id': event['id'], 'summary': event['summary']}
+            df_existing_events = pd.concat([df_existing_events, pd.DataFrame([row])], axis=0, ignore_index=True)
         page_token = events.get('nextPageToken')
         if not page_token:
             break
+
+    if full_reboot:
+        print(f"Full reboot mode")
+        # Delete all existing events
+        for index, existing_event in df_existing_events.iterrows():
+            service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=existing_event['event_id']).execute()
+            print(f"Delete event = {existing_event['summary']}, date = {existing_event['event_date']}")
+        # Set existing_event_max_date so, after add all new events
+        existing_event_max_date = (datetime.strptime(date_from, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+    else:
+        print(f"Non full reboot mode")
+        for index, existing_event in df_existing_events.iterrows():
+            if existing_event['event_date'] >= date_from:
+                event_summary_new = day_period_dict[existing_event['event_date']]
+                if event_summary_new != existing_event['summary']:
+                    print(f"Date {existing_event['event_date']}, old event = {existing_event['summary']}, "
+                          f"new - {event_summary_new}, recreate!")
+                    service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=existing_event['event_id']).execute()
+                    print(f"Delete event = {existing_event['summary']}, date = {existing_event['event_date']}")
+                    add_event(event_date=existing_event['event_date'], calendar_id=CALENDAR_RED_DAYS,
+                              event_summary=event_summary_new, service=service)
+                else:
+                    print(
+                        f"Date {existing_event['event_date']}, old event = {existing_event['summary']}, new is the same, "
+                        f"do nothing")
+        existing_event_max_date = df_existing_events['event_date'].max()
+    # Add new events
+    for event_date, event_summary in day_period_dict.items():
+        if event_date > existing_event_max_date:
+            add_event(event_date=event_date, calendar_id=CALENDAR_RED_DAYS, event_summary=event_summary,
+                      service=service)
+            print(f'Date {event_date}, add new event = {event_summary}')
 
 
 def build_service():
@@ -235,7 +256,7 @@ def change_cwd() -> None:
     os.chdir(new_work_dir)
 
 
-def main(calendar_id: str, date_from: str, full_reboot: bool = False):
+def main(calendar_id: str, date_from: str):
     """
     Do all work
     """
@@ -243,27 +264,33 @@ def main(calendar_id: str, date_from: str, full_reboot: bool = False):
 
     service = build_service()
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test_mode", action="store_true", help="run in test mode without change the calendar")
+    parser.add_argument("--full_reboot", action="store_false", help="delete all existing events")
+    parser.add_argument("number_of_periods_to_predict", type=int,  help="number_of_periods_to_predict")
+    args = parser.parse_args()
+
+    full_reboot = args.full_reboot
+    number_of_periods_to_predict = args.number_of_periods_to_predict
+
     df_red_events = event_extractor(calendar_id=calendar_id, service=service, date_from=date_from)
     df_red_events = period_analysis(df=df_red_events)
     date_from_recreate_events: str = calculate_start_date_for_recreate_events(df=df_red_events,
                                                                               date_from=date_from,
                                                                               full_reboot=full_reboot)
 
-    df_events_and_predictions = period_predictions(df=df_red_events, number_of_periods_to_predict=2)
+    df_events_and_predictions = period_predictions(df=df_red_events,
+                                                   number_of_periods_to_predict=number_of_periods_to_predict)
 
     day_period_dict: dict = day_of_period_calculation(df=df_events_and_predictions, date_from=date_from_recreate_events)
 
-    parser = argparse.ArgumentParser(description='Script so useful.')
-    parser.add_argument("--m", type=int, default=1)
-    args = parser.parse_args()
-    normal_way = args.m
-
-    if normal_way == 1:
+    if not args.test_mode:
         logging.info(f'Argument parser said the program run in a normal mode')
-        check_and_recreate_event(date_from=date_from_recreate_events, service=service, day_period_dict=day_period_dict)
+        check_and_recreate_event(date_from=date_from_recreate_events, service=service,
+                                 day_period_dict=day_period_dict, full_reboot=full_reboot)
 
     else:
-        logging.info(f'Argument parser said the program run in a simple mode')
+        logging.info(f'Argument parser said the program run in a test mode')
         print(df_events_and_predictions)
 
 

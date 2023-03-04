@@ -9,8 +9,7 @@ For venv activation
 1) Set-ExecutionPolicy RemoteSigned -Scope Process
 2) .\venv\Scripts\activate
 
-Mode selection
-"'".\venv\Scripts\python.exe .\src\main.py --m 0" 
+Mode selection: `.\venv\Scripts\python.exe .\src\main.py 2 --test_mode --full_reboot`
 
-For pythoneverywhere  - "python /home/mariana123/PeriodCalendar/src/main.py"
+For pythoneverywhere: `python /home/mariana123/PeriodCalendar/src/main.py 2`
 
