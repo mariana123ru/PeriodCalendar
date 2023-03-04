@@ -266,7 +266,7 @@ def main(calendar_id: str, date_from: str):
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--test_mode", action="store_true", help="run in test mode without change the calendar")
-    parser.add_argument("--full_reboot", action="store_false", help="delete all existing events")
+    parser.add_argument("--full_reboot", action="store_true", help="delete all existing events")
     parser.add_argument("number_of_periods_to_predict", type=int,  help="number_of_periods_to_predict")
     args = parser.parse_args()
 
