@@ -23,33 +23,34 @@ CREDS_PATH = 'resources/credentials.json'
 logging.basicConfig(level=logging.DEBUG)
 
 
-def event_extractor(calendar_id: str, service, date_from: str) -> pd.DataFrame:
+def event_extractor(calendar_id: str, service, date_from: str, drop_event_id: bool = True) -> pd.DataFrame:
     """
     Extract all events from calendar in interval
-    :param calendar_id: id of the calendar, see examples.py
-    :param service: google object
-    :param date_from: date from
-    :param date_to: date to
-    :return: dataframe
+    @param calendar_id: id of the calendar, see examples.py
+    @param service: google object
+    @param date_from:
+    @param drop_event_id:
     """
-    datetime_to = (datetime.today() + timedelta(days=14)).isoformat() + 'Z'
     datetime_from = datetime.strptime(date_from, '%Y-%m-%d').isoformat() + 'Z'
 
-    events_result = service.events().list(calendarId=calendar_id, timeMin=datetime_from, timeMax=datetime_to,
-                                          singleEvents=True, orderBy='startTime').execute()
+    events_result = service.events().list(calendarId=calendar_id, timeMin=datetime_from, singleEvents=True,
+                                          orderBy='startTime').execute()
     events = events_result.get('items', [])
 
-    df = pd.DataFrame(columns=['start', 'end', 'summary'], data=None)
+    df = pd.DataFrame(columns=['start', 'end', 'summary', 'event_id'], data=None)
 
     for event in events:
         start = event['start'].get('date', event['start'].get('date'))
         start_dt = datetime.strptime(start, '%Y-%m-%d')
         end = event['end'].get('date', event['end'].get('date'))
         end_dt = datetime.strptime(end, '%Y-%m-%d')
-        row = {'start': start_dt, 'end': end_dt, 'summary': event['summary']}
+        row = {'start': start_dt, 'end': end_dt, 'summary': event['summary'], 'event_id': event['id']}
         df = pd.concat([df, pd.DataFrame([row])], axis=0, ignore_index=True)
 
     logging.info(f'event_extractor end with {df.shape[0]}')
+
+    if drop_event_id:
+        return df.drop('event_id', axis=1)
     return df
 
 
@@ -102,7 +103,7 @@ def period_predictions(df: pd.DataFrame, number_of_periods_to_predict: int = 2) 
             days=average_period)
         df_last_row.iloc[0, df_last_row.columns.get_loc('period')] = average_period
         df_res = pd.concat([df_res, df_last_row])
-    logging.info(f'period_predictions end')
+    logging.info(f'period_predictions end with number_of_periods_to_predict = {number_of_periods_to_predict}')
     return df_res.reset_index().drop('index', axis=1)
 
 
@@ -120,6 +121,21 @@ def add_event(event_date: str, calendar_id, event_summary: str, service) -> None
             'date': event_date_plus_one,
         }}
     service.events().insert(calendarId=calendar_id, body=event).execute()
+
+
+def update_event_summary(event_id: str, calendar_id: str, event_summary: str, service) -> None:
+    """
+    Update summary of the event in calendar
+    @param event_id:
+    @param calendar_id:
+    @param event_summary:
+    @param service:
+    @return:
+    """
+    event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+    event['summary'] = event_summary
+    service.events().update(calendarId=calendar_id, eventId=event['id'], body=event).execute()
+    print(f"Event {event['start'].get('date', event['start'].get('date'))} was updated with {event_summary}")
 
 
 def day_of_period_calculation(df: pd.DataFrame, date_from: str) -> dict:
@@ -167,18 +183,12 @@ def check_and_recreate_event(date_from: str, service, day_period_dict: dict, ful
     Check all events from the calendar CALENDAR_RED_DAYS in after date_from and recreate if new event_summary
     from the dict is not the same as old one
     """
-    df_existing_events = pd.DataFrame(columns=['event_date', 'event_id', 'summary'], data=None)
+    df_existing_events = event_extractor(calendar_id=CALENDAR_RED_DAYS, service=service, date_from=date_from,
+                                         drop_event_id=False)
+    df_existing_events['event_date'] = df_existing_events['start'].apply(lambda x: x.strftime('%Y-%m-%d'))
+    df_existing_events = df_existing_events.drop(['start', 'end'], axis=1)
 
-    page_token = None
-    while True:
-        events = service.events().list(calendarId=CALENDAR_RED_DAYS, pageToken=page_token).execute()
-        for event in events['items']:
-            event_date = event['start'].get('dateTime', event['start'].get('date'))[0:10]
-            row = {'event_date': event_date, 'event_id': event['id'], 'summary': event['summary']}
-            df_existing_events = pd.concat([df_existing_events, pd.DataFrame([row])], axis=0, ignore_index=True)
-        page_token = events.get('nextPageToken')
-        if not page_token:
-            break
+    predicted_events_max_date = max(k for k, v in day_period_dict.items())
 
     if full_reboot:
         print(f"Full reboot mode")
@@ -191,19 +201,20 @@ def check_and_recreate_event(date_from: str, service, day_period_dict: dict, ful
     else:
         print(f"Non full reboot mode")
         for index, existing_event in df_existing_events.iterrows():
-            if existing_event['event_date'] >= date_from:
+            if existing_event['event_date'] > predicted_events_max_date:
+                service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=existing_event['event_id']).execute()
+                print(f"Delete event = {existing_event['summary']}, date = {existing_event['event_date']}, too far "
+                      f"predict")
+            else:
                 event_summary_new = day_period_dict[existing_event['event_date']]
                 if event_summary_new != existing_event['summary']:
                     print(f"Date {existing_event['event_date']}, old event = {existing_event['summary']}, "
                           f"new - {event_summary_new}, recreate!")
-                    service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=existing_event['event_id']).execute()
-                    print(f"Delete event = {existing_event['summary']}, date = {existing_event['event_date']}")
-                    add_event(event_date=existing_event['event_date'], calendar_id=CALENDAR_RED_DAYS,
-                              event_summary=event_summary_new, service=service)
+                    update_event_summary(calendar_id=CALENDAR_RED_DAYS, event_id=existing_event['event_id'],
+                                         service=service, event_summary=event_summary_new)
                 else:
-                    print(
-                        f"Date {existing_event['event_date']}, old event = {existing_event['summary']}, new is the same, "
-                        f"do nothing")
+                    print(f"Date {existing_event['event_date']}, old event = {existing_event['summary']}, "
+                          f"new is the same, do nothing")
         existing_event_max_date = df_existing_events['event_date'].max()
     # Add new events
     for event_date, event_summary in day_period_dict.items():
@@ -267,7 +278,8 @@ def main(calendar_id: str, date_from: str):
     parser = argparse.ArgumentParser()
     parser.add_argument("--test_mode", action="store_true", help="run in test mode without change the calendar")
     parser.add_argument("--full_reboot", action="store_true", help="delete all existing events")
-    parser.add_argument("number_of_periods_to_predict", type=int,  help="number_of_periods_to_predict")
+    parser.add_argument("number_of_periods_to_predict", type=int, help="number_of_periods_to_predict", nargs='?',
+                        const=2, default=2)
     args = parser.parse_args()
 
     full_reboot = args.full_reboot
