@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # If modifying these scopes, delete the file token.json.
-SCOPES = ['https://www.googleapis.com/auth/calendar']  # TODO: сделать два скоупа и два крелдса
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 # TODO: в режиме тестирования токен живет 7 дней, Token has been expired or revoked - перейти в прод?
 CALENDAR_RED: str = 'miemagrq7j7e3rfb7q333u794g@group.calendar.google.com'
 CALENDAR_RED_DAYS: str = '5142218fae4bc3ca21bb8de33ae7516fea914eb0a3d2b171816a7a1e58716ddb@group.calendar.google.com'
@@ -60,7 +60,7 @@ def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
     """
     df.sort_values('start', inplace=True)
     df['duration'] = (df['end'] - df['start']).dt.days + 1
-    df['is_valid_period'] = df['duration'].apply(lambda x: 1 if x >= 3 else 0)
+    df['is_valid_period'] = df['duration'].apply(lambda x: 1 if x >= 4 else 0)  # in fact, it is 3+ days
     df['next_start'] = df.groupby(['is_valid_period'])['start'].shift(-1)
 
     df['period'] = df.apply(lambda row:
@@ -298,8 +298,15 @@ def main(calendar_id: str, date_from: str):
 
     if not args.test_mode:
         logging.info(f'Argument parser said the program run in a normal mode')
-        check_and_recreate_event(date_from=date_from_recreate_events, service=service,
-                                 day_period_dict=day_period_dict, full_reboot=full_reboot)
+        current_date = datetime.today().strftime('%Y-%m-%d')
+        current_date_day_in_period = int(day_period_dict[current_date].split('= ')[1])
+        if not 6 <= current_date_day_in_period <= 20 or full_reboot:
+            logging.info(f'Today is {current_date_day_in_period} day in period, full reboot is {full_reboot}, so run!')
+            check_and_recreate_event(date_from=date_from_recreate_events, service=service,
+                                     day_period_dict=day_period_dict, full_reboot=full_reboot)
+        else:
+            logging.info(f'Today is {current_date_day_in_period} day in period, so just relax!')
+            print(df_events_and_predictions)
 
     else:
         logging.info(f'Argument parser said the program run in a test mode')
