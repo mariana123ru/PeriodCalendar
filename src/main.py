@@ -2,7 +2,6 @@ from datetime import datetime
 from datetime import timedelta
 
 import os.path
-import pandas as pd
 import logging
 import argparse
 
@@ -14,7 +13,8 @@ from googleapiclient.errors import HttpError
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-# TODO: в режиме тестирования токен живет 7 дней, Token has been expired or revoked - перейти в прод?
+# В режиме тестирования токен живет 7 дней, Token has been expired or revoked - перешла в прод
+# https://support.google.com/cloud/answer/10311615#zippy=%2Ctesting
 CALENDAR_RED: str = 'miemagrq7j7e3rfb7q333u794g@group.calendar.google.com'
 CALENDAR_RED_DAYS: str = '5142218fae4bc3ca21bb8de33ae7516fea914eb0a3d2b171816a7a1e58716ddb@group.calendar.google.com'
 TOKEN_PATH = 'resources/token.json'
@@ -23,88 +23,73 @@ CREDS_PATH = 'resources/credentials.json'
 logging.basicConfig(level=logging.DEBUG)
 
 
-def event_extractor(calendar_id: str, service, date_from: str, drop_event_id: bool = True) -> pd.DataFrame:
+def event_extractor(calendar_id: str, service, date_from: datetime) -> dict:
     """
     Extract all events from calendar in interval
     @param calendar_id: id of the calendar, see examples.py
     @param service: google object
     @param date_from:
-    @param drop_event_id:
     """
-    datetime_from = datetime.strptime(date_from, '%Y-%m-%d').isoformat() + 'Z'
+    datetime_from = date_from.isoformat() + 'Z'
 
     events_result = service.events().list(calendarId=calendar_id, timeMin=datetime_from, singleEvents=True,
                                           orderBy='startTime').execute()
     events = events_result.get('items', [])
 
-    df = pd.DataFrame(columns=['start', 'end', 'summary', 'event_id'], data=None)
+    dict_events = {}
+    key_index = 0
 
     for event in events:
-        start = event['start'].get('date', event['start'].get('date'))
-        start_dt = datetime.strptime(start, '%Y-%m-%d')
-        end = event['end'].get('date', event['end'].get('date'))
-        end_dt = datetime.strptime(end, '%Y-%m-%d')
-        row = {'start': start_dt, 'end': end_dt, 'summary': event['summary'], 'event_id': event['id']}
-        df = pd.concat([df, pd.DataFrame([row])], axis=0, ignore_index=True)
+        start_dt = datetime.strptime(event['start'].get('date', event['start'].get('date')), '%Y-%m-%d')
+        end_dt = datetime.strptime(event['end'].get('date', event['end'].get('date')), '%Y-%m-%d')
+        is_valid_period = (end_dt - start_dt).days >= 3
+        # From calendar CALENDAR_RED extract only valid period, for CALENDAR_RED_DAYS - all days data
+        if is_valid_period or calendar_id == CALENDAR_RED_DAYS:
+            dict_events[key_index] = {'start': start_dt, 'end': end_dt, 'summary': event['summary']}
+            key_index = key_index + 1
 
-    logging.info(f'event_extractor end with {df.shape[0]}')
+    logging.info(f'event_extractor end with {key_index} events extracted')
 
-    if drop_event_id:
-        return df.drop('event_id', axis=1)
-    return df
+    return dict_events
 
 
-def period_analysis(df: pd.DataFrame) -> pd.DataFrame:
+def period_analysis(dct: dict) -> dict:
     """
     Calculate some stat for period data
     """
-    df.sort_values('start', inplace=True)
-    df['duration'] = (df['end'] - df['start']).dt.days + 1
-    df['is_valid_period'] = df['duration'].apply(lambda x: 1 if x >= 4 else 0)  # in fact, it is 3+ days
-    df['next_start'] = df.groupby(['is_valid_period'])['start'].shift(-1)
-
-    df['period'] = df.apply(lambda row:
-                            int((row['next_start'] - row['start']).days)
-                            if row['next_start'] == row['next_start'] and row['is_valid_period'] == 1
-                            else -1, axis=1)
+    for key in dct:
+        dct[key]['duration'] = (dct[key]['end'] - dct[key]['start']).days + 1
+        if key + 1 in dct:
+            dct[key]['period'] = (dct[key + 1]['start'] - dct[key]['start']).days
 
     logging.info(f'period_analysis end')
-    return df
+    return dct
 
 
-def period_predictions(df: pd.DataFrame, number_of_periods_to_predict: int = 2) -> pd.DataFrame:
-    # TODO: Переписать нафиг
+def period_predictions(dct: dict, number_of_periods_to_predict: int = 2) -> dict:
+    """
+    Predict periods for number_of_periods_to_predict
+    """
+    number_of_full_periods = len(dct) - 1
+    last_3_full_periods_keys = range(number_of_full_periods - 3, number_of_full_periods)
+    average_period = int(sum(dct[key]['period'] for key in last_3_full_periods_keys) / 3)
+    average_duration = int(sum(dct[key]['duration'] for key in last_3_full_periods_keys) / 3)
 
-    df_last_4_valid_periods = df[df['is_valid_period'] == 1].tail(4).copy()
-    df_last_3_full_valid_periods = df_last_4_valid_periods.head(3).copy()
-    average_period = int(df_last_3_full_valid_periods['period'].mean())
-    average_duration = int(df_last_3_full_valid_periods['duration'].mean())
+    # Use average period as period length for the last known period, which is not full
+    dct[number_of_full_periods]['period'] = average_period
 
-    df_last_4_valid_periods.iloc[3, df_last_4_valid_periods.columns.get_loc('period')] = average_period
-    df_last_4_valid_periods.iloc[3, df_last_4_valid_periods.columns.get_loc('next_start')] = \
-        df_last_4_valid_periods.iloc[3]['start'] + timedelta(days=average_period)
-
-    df_last_row = df_last_4_valid_periods.tail(1).copy()
-    df_res = df_last_4_valid_periods.copy()
-
+    # Make prediction
     for i in range(number_of_periods_to_predict):
-        df_last_row.iloc[0, df_last_row.columns.get_loc('start')] = df_last_row.iloc[
-            0, df_last_row.columns.get_loc('next_start')]
-        df_last_row.iloc[0, df_last_row.columns.get_loc('end')] = df_last_row.iloc[
-                                                                      0, df_last_row.columns.get_loc(
-                                                                          'start')] + timedelta(
-            days=average_duration)
-        df_last_row.iloc[0, df_last_row.columns.get_loc('summary')] = f'Prediction {i + 1}'
-        df_last_row.iloc[0, df_last_row.columns.get_loc('duration')] = average_duration
-        df_last_row.iloc[0, df_last_row.columns.get_loc('is_valid_period')] = 1
-        df_last_row.iloc[0, df_last_row.columns.get_loc('next_start')] = df_last_row.iloc[
-                                                                             0, df_last_row.columns.get_loc(
-                                                                                 'start')] + timedelta(
-            days=average_period)
-        df_last_row.iloc[0, df_last_row.columns.get_loc('period')] = average_period
-        df_res = pd.concat([df_res, df_last_row])
-    logging.info(f'period_predictions end with number_of_periods_to_predict = {number_of_periods_to_predict}')
-    return df_res.reset_index().drop('index', axis=1)
+        dct[number_of_full_periods + i + 1] = {}
+        dct[number_of_full_periods + i + 1]['start'] = \
+            dct[number_of_full_periods + i]['start'] + timedelta(days=average_period)
+        dct[number_of_full_periods + i + 1]['end'] = \
+            dct[number_of_full_periods + i + 1]['start'] + timedelta(days=average_duration)
+        dct[number_of_full_periods + i + 1]['summary'] = f'Prediction {i + 1}'
+        dct[number_of_full_periods + i + 1]['duration'] = average_duration
+        dct[number_of_full_periods + i + 1]['period'] = average_period
+
+    return dct
 
 
 def add_event(event_date: str, calendar_id, event_summary: str, service) -> None:
@@ -138,84 +123,87 @@ def update_event_summary(event_id: str, calendar_id: str, event_summary: str, se
     print(f"Event {event['start'].get('date', event['start'].get('date'))} was updated with {event_summary}")
 
 
-def day_of_period_calculation(df: pd.DataFrame, date_from: str) -> dict:
+def day_of_period_calculation(dct: dict, date_recreate: datetime) -> dict:
     """
     For each day after date_from from df calculate day of period
     """
-    df = df[df['start'] >= date_from]
     day_period_dict = dict()
-    for index, row in df.iterrows():
-        for i in range(int(row['period'])):
-            event_date = (row['start'] + timedelta(days=i)).strftime('%Y-%m-%d')
-            period_day_threshold = row['duration']
-            ovulation_days = int(row['period'] / 2) - 1
-            if i < period_day_threshold:
-                summary = f'Active, period day = {i + 1}'
-            elif abs(i - ovulation_days) <= 1:
-                summary = f'Ovulation, period day = {i + 1}'
-            elif i >= row['period'] - 1:
-                summary = f'Be ready, period day = {i + 1}'
-            else:
-                summary = f'Just day, period day = {i + 1}'
-            if row['summary'][:10] == 'Prediction':
-                summary = row['summary'] + ': ' + summary
+    for key in dct:
+        if dct[key]['start'] >= date_recreate:
+            for i in range(dct[key]['period']):
+                event_date = (dct[key]['start'] + timedelta(days=i)).strftime('%Y-%m-%d')
+                period_day_threshold = dct[key]['duration']
+                ovulation_days = int(dct[key]['period'] / 2) - 1
+                if i < period_day_threshold:
+                    summary = f'Active, period day = {i + 1}'
+                elif abs(i - ovulation_days) <= 1:
+                    summary = f'Ovulation, period day = {i + 1}'
+                elif i >= dct[key]['period'] - 1:
+                    summary = f'Be ready, period day = {i + 1}'
+                else:
+                    summary = f'Just day, period day = {i + 1}'
+                if dct[key]['summary'][:10] == 'Prediction':
+                    summary = dct[key]['summary'] + ': ' + summary
 
-            day_period_dict[event_date] = summary
-    print(f"day_of_period_calculation end, date from = {date_from}")
+                day_period_dict[event_date] = summary
+    print(f"day_of_period_calculation end, recreate from = {date_recreate}")
     return day_period_dict
 
 
-def calculate_start_date_for_recreate_events(df: pd.DataFrame, full_reboot: bool, date_from: str) -> str:
+def calculate_recreate_date(dct: dict, full_reboot: bool, date_from: datetime) -> datetime:
     """
-    @param df: dataframe without predictions
+    @param dct: dictionary without predictions
     @param full_reboot: True - recreate all events
     @param date_from: date from
-    @return: new date_from
+    @return: new date_from in datetime
     """
     if not full_reboot:
-        df_valid_period = df[df['is_valid_period'] == 1]
-        date_from = df_valid_period.take([-2]).reset_index().drop('index', axis=1)['start'][0].strftime('%Y-%m-%d')
-    return date_from
+        recreate_dt = dct[len(dct) - 2]['start']
+    else:
+        recreate_dt = date_from
+    return recreate_dt
 
 
-def check_and_recreate_event(date_from: str, service, day_period_dict: dict, full_reboot: bool) -> None:
+def check_and_recreate_event(date_from: datetime, service, day_period_dict: dict, full_reboot: bool) -> None:
     """
     Check all events from the calendar CALENDAR_RED_DAYS in after date_from and recreate if new event_summary
     from the dict is not the same as old one
     """
-    df_existing_events = event_extractor(calendar_id=CALENDAR_RED_DAYS, service=service, date_from=date_from,
-                                         drop_event_id=False)
-    df_existing_events['event_date'] = df_existing_events['start'].apply(lambda x: x.strftime('%Y-%m-%d'))
-    df_existing_events = df_existing_events.drop(['start', 'end'], axis=1)
+    dct_exist_events = event_extractor(calendar_id=CALENDAR_RED_DAYS, service=service, date_from=date_from)
+
+    for key in dct_exist_events:
+        dct_exist_events[key]['event_date'] = dct_exist_events[key]['start'].strftime('%Y-%m-%d')
 
     predicted_events_max_date = max(k for k, v in day_period_dict.items())
 
     if full_reboot:
         print(f"Full reboot mode")
         # Delete all existing events
-        for index, existing_event in df_existing_events.iterrows():
-            service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=existing_event['event_id']).execute()
-            print(f"Delete event = {existing_event['summary']}, date = {existing_event['event_date']}")
+        for key in dct_exist_events:
+            service.events().delete(calendarId=CALENDAR_RED_DAYS,
+                                    eventId=dct_exist_events[key]['event_id']).execute()
+            print(f"Delete event = {dct_exist_events[key]['summary']}, date = {dct_exist_events[key]['event_date']}")
         # Set existing_event_max_date so, after add all new events
-        existing_event_max_date = (datetime.strptime(date_from, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+        existing_event_max_date = (date_from - timedelta(days=1)).strftime('%Y-%m-%d')
     else:
         print(f"Non full reboot mode")
-        for index, existing_event in df_existing_events.iterrows():
-            if existing_event['event_date'] > predicted_events_max_date:
-                service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=existing_event['event_id']).execute()
-                print(f"Delete event = {existing_event['summary']}, date = {existing_event['event_date']}, too far "
-                      f"predict")
+        for key in dct_exist_events:
+            if dct_exist_events[key]['event_date'] > predicted_events_max_date:
+                service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=dct_exist_events[key]['event_id']).execute()
+                print(f"Delete event = {dct_exist_events[key]['summary']}, "
+                      f"date = {dct_exist_events[key]['event_date']}, too far to predict")
             else:
-                event_summary_new = day_period_dict[existing_event['event_date']]
-                if event_summary_new != existing_event['summary']:
-                    print(f"Date {existing_event['event_date']}, old event = {existing_event['summary']}, "
+                event_summary_new = day_period_dict[dct_exist_events[key]['event_date']]
+                if event_summary_new != dct_exist_events[key]['summary']:
+                    print(f"Date {dct_exist_events[key]['event_date']}, old event = {dct_exist_events[key]['summary']}, "
                           f"new - {event_summary_new}, recreate!")
-                    update_event_summary(calendar_id=CALENDAR_RED_DAYS, event_id=existing_event['event_id'],
+                    update_event_summary(calendar_id=CALENDAR_RED_DAYS, event_id=dct_exist_events[key]['event_id'],
                                          service=service, event_summary=event_summary_new)
                 else:
-                    print(f"Date {existing_event['event_date']}, old event = {existing_event['summary']}, "
+                    print(f"Date {dct_exist_events[key]['event_date']}, old event = {dct_exist_events[key]['summary']}, "
                           f"new is the same, do nothing")
-        existing_event_max_date = df_existing_events['event_date'].max()
+
+        existing_event_max_date = max(dct_exist_events[key]['event_date'] for key in dct_exist_events)
     # Add new events
     for event_date, event_summary in day_period_dict.items():
         if event_date > existing_event_max_date:
@@ -267,7 +255,7 @@ def change_cwd() -> None:
     os.chdir(new_work_dir)
 
 
-def main(calendar_id: str, date_from: str):
+def main():
     """
     Do all work
     """
@@ -285,33 +273,37 @@ def main(calendar_id: str, date_from: str):
     full_reboot = args.full_reboot
     number_of_periods_to_predict = args.number_of_periods_to_predict
 
-    df_red_events = event_extractor(calendar_id=calendar_id, service=service, date_from=date_from)
-    df_red_events = period_analysis(df=df_red_events)
-    date_from_recreate_events: str = calculate_start_date_for_recreate_events(df=df_red_events,
-                                                                              date_from=date_from,
-                                                                              full_reboot=full_reboot)
+    # Start analysis from 210 days before today, but not before '2022-11-01'
+    date_from: datetime = max(datetime.today() - timedelta(days=210), datetime(2022, 11, 1))
 
-    df_events_and_predictions = period_predictions(df=df_red_events,
-                                                   number_of_periods_to_predict=number_of_periods_to_predict)
+    dct_red_events = event_extractor(calendar_id=CALENDAR_RED, service=service, date_from=date_from)
+    dct_red_events = period_analysis(dct=dct_red_events)
+    date_from_recreate_events: datetime = calculate_recreate_date(dct=dct_red_events,
+                                                                  date_from=date_from,
+                                                                  full_reboot=full_reboot)
 
-    day_period_dict: dict = day_of_period_calculation(df=df_events_and_predictions, date_from=date_from_recreate_events)
+    dct_events_and_predictions = period_predictions(dct=dct_red_events,
+                                                    number_of_periods_to_predict=number_of_periods_to_predict)
+
+    dct_day_period: dict = day_of_period_calculation(dct=dct_events_and_predictions,
+                                                     date_recreate=date_from_recreate_events)
 
     if not args.test_mode:
         logging.info(f'Argument parser said the program run in a normal mode')
         current_date = datetime.today().strftime('%Y-%m-%d')
-        current_date_day_in_period = int(day_period_dict[current_date].split('= ')[1])
+        current_date_day_in_period = int(dct_day_period[current_date].split('= ')[1])
         if not 6 <= current_date_day_in_period <= 20 or full_reboot:
             logging.info(f'Today is {current_date_day_in_period} day in period, full reboot is {full_reboot}, so run!')
             check_and_recreate_event(date_from=date_from_recreate_events, service=service,
-                                     day_period_dict=day_period_dict, full_reboot=full_reboot)
+                                     day_period_dict=dct_day_period, full_reboot=full_reboot)
         else:
             logging.info(f'Today is {current_date_day_in_period} day in period, so just relax!')
-            print(df_events_and_predictions)
+            #print(dct_events_and_predictions)
 
     else:
         logging.info(f'Argument parser said the program run in a test mode')
-        print(df_events_and_predictions)
+        # print(dct_events_and_predictions)
 
 
 if __name__ == '__main__':
-    main(calendar_id=CALENDAR_RED, date_from='2022-11-01')
+    main()
