@@ -190,19 +190,20 @@ def check_and_recreate_event(date_from: datetime, service, day_period_dict: dict
         print(f"Non full reboot mode")
         for key in dct_exist_events:
             if dct_exist_events[key]['event_date'] > predicted_events_max_date:
-                service.events().delete(calendarId=CALENDAR_RED_DAYS, eventId=dct_exist_events[key]['event_id']).execute()
+                service.events().delete(calendarId=CALENDAR_RED_DAYS,
+                                        eventId=dct_exist_events[key]['event_id']).execute()
                 print(f"Delete event = {dct_exist_events[key]['summary']}, "
                       f"date = {dct_exist_events[key]['event_date']}, too far to predict")
             else:
                 event_summary_new = day_period_dict[dct_exist_events[key]['event_date']]
                 if event_summary_new != dct_exist_events[key]['summary']:
-                    print(f"Date {dct_exist_events[key]['event_date']}, old event = {dct_exist_events[key]['summary']}, "
-                          f"new - {event_summary_new}, recreate!")
+                    print(f"Date {dct_exist_events[key]['event_date']}, "
+                          f"old event = {dct_exist_events[key]['summary']}, new - {event_summary_new}, recreate!")
                     update_event_summary(calendar_id=CALENDAR_RED_DAYS, event_id=dct_exist_events[key]['event_id'],
                                          service=service, event_summary=event_summary_new)
                 else:
-                    print(f"Date {dct_exist_events[key]['event_date']}, old event = {dct_exist_events[key]['summary']}, "
-                          f"new is the same, do nothing")
+                    print(f"Date {dct_exist_events[key]['event_date']}, "
+                          f"old event = {dct_exist_events[key]['summary']}, new is the same, do nothing")
 
         existing_event_max_date = max(dct_exist_events[key]['event_date'] for key in dct_exist_events)
     # Add new events
@@ -299,11 +300,9 @@ def main():
                                      day_period_dict=dct_day_period, full_reboot=full_reboot)
         else:
             logging.info(f'Today is {current_date_day_in_period} day in period, so just relax!')
-            #print(dct_events_and_predictions)
 
     else:
         logging.info(f'Argument parser said the program run in a test mode')
-        # print(dct_events_and_predictions)
 
 
 if __name__ == '__main__':
