@@ -134,7 +134,7 @@ def day_of_period_calculation(dct: dict, date_recreate: datetime) -> dict:
             for i in range(dct[key]['period']):
                 event_date = (dct[key]['start'] + timedelta(days=i)).strftime('%Y-%m-%d')
                 period_day_threshold = dct[key]['duration']
-                ovulation_days = int(dct[key]['period'] / 2) - 1
+                ovulation_days = dct[key]['period'] - 14
                 if i < period_day_threshold:
                     summary = f'Active, period day = {i + 1}'
                 elif abs(i - ovulation_days) <= 1:
