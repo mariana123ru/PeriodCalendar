@@ -40,9 +40,16 @@ def event_extractor(calendar_id: str, service, date_from: datetime) -> dict:
     key_index = 0
 
     for event in events:
-        start_dt = datetime.strptime(event['start'].get('date', event['start'].get('date')), '%Y-%m-%d')
-        end_dt = datetime.strptime(event['end'].get('date', event['end'].get('date')), '%Y-%m-%d')
-        is_valid_period = (end_dt - start_dt).days >= 3
+        if event['start'].get('date'):
+            start_dt = datetime.strptime(event['start'].get('date'), '%Y-%m-%d')
+            end_dt = datetime.strptime(event['end'].get('date'), '%Y-%m-%d')
+        elif event['start'].get('dateTime'):
+            start_dt = datetime.strptime(event['start'].get('dateTime')[:10], '%Y-%m-%d')
+            end_dt = datetime.strptime(event['end'].get('dateTime')[:10], '%Y-%m-%d')
+        else:
+            print(f'Time format is crazy for event_id = {event["id"]} in start = {event["start"]}')
+
+        is_valid_period = (end_dt - start_dt).days >= 2
         # From calendar CALENDAR_RED extract only valid period, for CALENDAR_RED_DAYS - all days data
         if is_valid_period or calendar_id == CALENDAR_RED_DAYS:
             dict_events[key_index] = {'start': start_dt, 'end': end_dt, 'summary': event['summary'],
