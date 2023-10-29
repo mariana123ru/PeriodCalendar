@@ -49,6 +49,8 @@ def event_extractor(calendar_id: str, service, date_from: datetime) -> dict:
         else:
             print(f'Time format is crazy for event_id = {event["id"]} in start = {event["start"]}')
 
+        end_dt = end_dt - timedelta(days=1)  # for some reason, google add one day
+
         is_valid_period = (end_dt - start_dt).days >= 2
         # From calendar CALENDAR_RED extract only valid period, for CALENDAR_RED_DAYS - all days data
         if is_valid_period or calendar_id == CALENDAR_RED_DAYS:
