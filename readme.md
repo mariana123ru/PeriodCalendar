@@ -18,4 +18,5 @@ If token is old
 2) Go to [OAuth 2.0 Client IDs](https://console.cloud.google.com/apis/credentials?hl=ru&project=period-calendar-377513) 
 3) Create new creds (OAuth 2.0, desktop version), download it and save as credentials.json 
 
+Have fun!
 
