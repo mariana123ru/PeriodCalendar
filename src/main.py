@@ -20,7 +20,7 @@ CALENDAR_RED_DAYS: str = '5142218fae4bc3ca21bb8de33ae7516fea914eb0a3d2b171816a7a
 TOKEN_PATH = 'resources/token.json'
 CREDS_PATH = 'resources/credentials.json'
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG, filename='../log.log', format='%(asctime)s %(message)s')
 
 
 def event_extractor(calendar_id: str, service, date_from: datetime) -> dict:
@@ -155,7 +155,7 @@ def day_of_period_calculation(dct: dict, date_recreate: datetime) -> dict:
                     summary = dct[key]['summary'] + ': ' + summary
 
                 day_period_dict[event_date] = summary
-    print(f"day_of_period_calculation end, recreate from = {date_recreate}")
+    logging.info(f"day_of_period_calculation end, recreate from = {date_recreate}")
     return day_period_dict
 
 
@@ -255,13 +255,13 @@ def change_cwd() -> None:
     project_name = 'PeriodCalendar'
 
     work_dir: str = os.getcwd()
-    print(f'Old working dir = {work_dir}')
+    logging.info(f'Old working dir = {work_dir}')
     if work_dir != '/home/mariana123':
         period_index = work_dir.rfind(project_name)
         new_work_dir = work_dir[:period_index + len(project_name)]
     else:
         new_work_dir = '/home/mariana123/PeriodCalendar'  # For pythoneverywhere
-    print(f'New working dir = {os.getcwd()}')
+    logging.info(f'New working dir = {os.getcwd()}')
     os.chdir(new_work_dir)
 
 
