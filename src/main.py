@@ -43,13 +43,12 @@ def event_extractor(calendar_id: str, service, date_from: datetime) -> dict:
         if event['start'].get('date'):
             start_dt = datetime.strptime(event['start'].get('date'), '%Y-%m-%d')
             end_dt = datetime.strptime(event['end'].get('date'), '%Y-%m-%d')
+            end_dt = end_dt - timedelta(days=1)  # for some reason, google add one day in date format only
         elif event['start'].get('dateTime'):
             start_dt = datetime.strptime(event['start'].get('dateTime')[:10], '%Y-%m-%d')
             end_dt = datetime.strptime(event['end'].get('dateTime')[:10], '%Y-%m-%d')
         else:
             print(f'Time format is crazy for event_id = {event["id"]} in start = {event["start"]}')
-
-        end_dt = end_dt - timedelta(days=1)  # for some reason, google add one day
 
         is_valid_period = (end_dt - start_dt).days >= 2
         # From calendar CALENDAR_RED extract only valid period, for CALENDAR_RED_DAYS - all days data
