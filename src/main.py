@@ -79,10 +79,12 @@ def period_predictions(dct: dict, number_of_periods_to_predict: int = 2) -> dict
     """
     Predict periods for number_of_periods_to_predict
     """
+    dct_normal_period = {k: v for (k, v) in dct.items() if v['summary'] != 'Prolonged cycle'}
+
     number_of_full_periods = len(dct) - 1
-    last_3_full_periods_keys = range(number_of_full_periods - 3, number_of_full_periods)
-    average_period = int(sum(dct[key]['period'] for key in last_3_full_periods_keys) / 3)
-    average_duration = int(sum(dct[key]['duration'] for key in last_3_full_periods_keys) / 3)
+    last_3_full_normal_periods_keys = list(dct_normal_period.keys())[-4:-1]
+    average_period = int(sum(dct_normal_period[key]['period'] for key in last_3_full_normal_periods_keys) / 3)
+    average_duration = int(sum(dct_normal_period[key]['duration'] for key in last_3_full_normal_periods_keys) / 3)
 
     # Use average period as period length for the last known period, which is not full
     dct[number_of_full_periods]['period'] = average_period
