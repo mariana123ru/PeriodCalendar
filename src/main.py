@@ -75,16 +75,18 @@ def period_analysis(dct: dict) -> dict:
     return dct
 
 
-def period_predictions(dct: dict, number_of_periods_to_predict: int = 2) -> dict:
+def period_predictions(dct: dict, number_of_periods_to_predict: int = 2, number_of_periods_to_analise: int = 6) -> dict:
     """
     Predict periods for number_of_periods_to_predict
     """
-    dct_normal_period = {k: v for (k, v) in dct.items() if v['summary'] != 'Prolonged cycle'}
+    dct_normal_period = {k: v for (k, v) in dct.items() if v['summary'] != 'Specific cycle'}
 
     number_of_full_periods = len(dct) - 1
-    last_3_full_normal_periods_keys = list(dct_normal_period.keys())[-4:-1]
-    average_period = int(sum(dct_normal_period[key]['period'] for key in last_3_full_normal_periods_keys) / 3)
-    average_duration = int(sum(dct_normal_period[key]['duration'] for key in last_3_full_normal_periods_keys) / 3)
+    last_3_full_normal_periods_keys = list(dct_normal_period.keys())[-(number_of_periods_to_analise + 1):-1]
+    average_period = int(sum(dct_normal_period[key]['period'] for key in last_3_full_normal_periods_keys)
+                         / number_of_periods_to_analise)
+    average_duration = int(sum(dct_normal_period[key]['duration'] for key in last_3_full_normal_periods_keys)
+                           / number_of_periods_to_analise)
 
     # Use average period as period length for the last known period, which is not full
     dct[number_of_full_periods]['period'] = average_period
@@ -285,8 +287,8 @@ def main():
     full_reboot = args.full_reboot
     number_of_periods_to_predict = args.number_of_periods_to_predict
 
-    # Start analysis from 210 days before today, but not before '2022-11-01'
-    date_from: datetime = max(datetime.today() - timedelta(days=210), datetime(2022, 11, 1))
+    # Start analysis from 300 days before today, but not before '2022-11-01'
+    date_from: datetime = max(datetime.today() - timedelta(days=300), datetime(2022, 11, 1))
 
     dct_red_events = event_extractor(calendar_id=CALENDAR_RED, service=service, date_from=date_from)
     dct_red_events = period_analysis(dct=dct_red_events)
