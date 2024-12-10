@@ -79,10 +79,14 @@ def period_predictions(dct: dict, number_of_periods_to_predict: int = 2, number_
     """
     Predict periods for number_of_periods_to_predict
     """
+
     dct_normal_period = {k: v for (k, v) in dct.items() if v['summary'] != 'Specific cycle'}
 
     number_of_full_periods = len(dct) - 1
     last_3_full_normal_periods_keys = list(dct_normal_period.keys())[-(number_of_periods_to_analise + 1):-1]
+    # fix if we don't have enough normal periods
+    number_of_periods_to_analise = min(number_of_periods_to_analise, len(last_3_full_normal_periods_keys))
+    print(f'Real number of periods to analyse = {number_of_periods_to_analise}')
     average_period = int(sum(dct_normal_period[key]['period'] for key in last_3_full_normal_periods_keys)
                          / number_of_periods_to_analise)
     average_duration = int(sum(dct_normal_period[key]['duration'] for key in last_3_full_normal_periods_keys)
@@ -182,7 +186,17 @@ def check_and_recreate_event(date_from: datetime, service, day_period_dict: dict
     Check all events from the calendar CALENDAR_RED_DAYS in after date_from and recreate if new event_summary
     from the dict is not the same as old one
     """
-    dct_exist_events = event_extractor(calendar_id=CALENDAR_RED_DAYS, service=service, date_from=date_from)
+    dct_exist_events = {}
+    # event_extractor returns only first 250 events!
+    while True:
+        i = 0
+        extracted_events = event_extractor(calendar_id=CALENDAR_RED_DAYS, service=service, date_from=date_from)
+        for key in extracted_events:
+            dct_exist_events[key + i * 250] = extracted_events[key]
+        i += 1
+        date_from = extracted_events[len(extracted_events) - 1]['start'] + timedelta(days=1)
+        if len(extracted_events) < 250:
+            break
 
     for key in dct_exist_events:
         dct_exist_events[key]['event_date'] = dct_exist_events[key]['start'].strftime('%Y-%m-%d')
@@ -218,6 +232,7 @@ def check_and_recreate_event(date_from: datetime, service, day_period_dict: dict
                           f"old event = {dct_exist_events[key]['summary']}, new is the same, do nothing")
 
         existing_event_max_date = max(dct_exist_events[key]['event_date'] for key in dct_exist_events)
+
     # Add new events
     for event_date, event_summary in day_period_dict.items():
         if event_date > existing_event_max_date:
@@ -281,7 +296,7 @@ def main():
     parser.add_argument("--test_mode", action="store_true", help="run in test mode without change the calendar")
     parser.add_argument("--full_reboot", action="store_true", help="delete all existing events")
     parser.add_argument("number_of_periods_to_predict", type=int, help="number_of_periods_to_predict", nargs='?',
-                        const=2, default=2)
+                        const=2, default=1)
     args = parser.parse_args()
 
     full_reboot = args.full_reboot
