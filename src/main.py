@@ -75,7 +75,24 @@ def period_analysis(dct: dict) -> dict:
     return dct
 
 
-def period_predictions(dct: dict, number_of_periods_to_predict: int = 2, number_of_periods_to_analise: int = 6) -> dict:
+def check_if_specific_time(dct: dict) -> str:
+    """
+    Check if any of specific times based on summary of thr last period
+    @param dct:
+    @return: None, pregnancy, pills
+    """
+
+    match dct[list(dct)[-1]]['summary']:
+        case '||':
+            return 'pregnancy'
+        case 'pills':
+            return 'pills'
+        case _:
+            return None
+
+
+def period_predictions(dct: dict, specific_time: str, number_of_periods_to_predict: int = 2,
+                       number_of_periods_to_analise: int = 6) -> dict:
     """
     Predict periods for number_of_periods_to_predict
     """
@@ -94,6 +111,11 @@ def period_predictions(dct: dict, number_of_periods_to_predict: int = 2, number_
 
     # Use average period as period length for the last known period, which is not full
     dct[number_of_full_periods]['period'] = average_period
+
+    # In case of pregnancy we need 280 days
+    if specific_time == 'pregnancy':
+        dct[number_of_full_periods]['period'] = 280
+        return dct
 
     # Make prediction
     for i in range(number_of_periods_to_predict):
@@ -151,16 +173,29 @@ def day_of_period_calculation(dct: dict, date_recreate: datetime) -> dict:
                 event_date = (dct[key]['start'] + timedelta(days=i)).strftime('%Y-%m-%d')
                 period_day_threshold = dct[key]['duration']
                 ovulation_days = dct[key]['period'] - 14
+
                 if i < period_day_threshold:
                     summary = f'Active, period day = {i + 1}'
-                elif abs(i - ovulation_days) <= 1:
-                    summary = f'Ovulation, period day = {i + 1}'
-                elif i >= dct[key]['period'] - 1:
-                    summary = f'Be ready, period day = {i + 1}'
-                else:
-                    summary = f'Just day, period day = {i + 1}'
-                if dct[key]['summary'][:10] == 'Prediction':
-                    summary = dct[key]['summary'] + ': ' + summary
+                elif dct[key]['summary'] != '||':
+                    if abs(i - ovulation_days) <= 1:
+                        summary = f'Ovulation, period day = {i + 1}'
+                    elif i >= dct[key]['period'] - 1:
+                        summary = f'Be ready, period day = {i + 1}'
+                    else:
+                        summary = f'Just day, period day = {i + 1}'
+                    if dct[key]['summary'][:10] == 'Prediction':
+                        summary = dct[key]['summary'] + ': ' + summary
+
+                elif dct[key]['summary'] == '||':
+                    week_num = i // 7 + 1
+                    if week_num <= 13:
+                        trimester_num = 1
+                    elif week_num <= 27:
+                        trimester_num = 2
+                    else:
+                        trimester_num = 3
+
+                    summary = f'Trimester {trimester_num}, week {week_num} and day = {i % 7}'
 
                 day_period_dict[event_date] = summary
     logging.info(f"day_of_period_calculation end, recreate from = {date_recreate}")
@@ -175,10 +210,11 @@ def calculate_recreate_date(dct: dict, full_reboot: bool, date_from: datetime) -
     @return: new date_from in datetime
     """
     if not full_reboot:
-        recreate_dt = dct[len(dct) - 2]['start']
+        dt_from = dct[list(dct)[-2]]['start']
     else:
-        recreate_dt = date_from
-    return recreate_dt
+        dt_from = date_from
+
+    return dt_from
 
 
 def check_and_recreate_event(date_from: datetime, service, day_period_dict: dict, full_reboot: bool) -> None:
@@ -307,12 +343,14 @@ def main():
 
     dct_red_events = event_extractor(calendar_id=CALENDAR_RED, service=service, date_from=date_from)
     dct_red_events = period_analysis(dct=dct_red_events)
-    date_from_recreate_events: datetime = calculate_recreate_date(dct=dct_red_events,
-                                                                  date_from=date_from,
-                                                                  full_reboot=full_reboot)
+    specific_time = check_if_specific_time(dct=dct_red_events)
+
+    date_from_recreate_events = calculate_recreate_date(dct=dct_red_events, date_from=date_from,
+                                                        full_reboot=full_reboot)
 
     dct_events_and_predictions = period_predictions(dct=dct_red_events,
-                                                    number_of_periods_to_predict=number_of_periods_to_predict)
+                                                    number_of_periods_to_predict=number_of_periods_to_predict,
+                                                    specific_time=specific_time)
 
     dct_day_period: dict = day_of_period_calculation(dct=dct_events_and_predictions,
                                                      date_recreate=date_from_recreate_events)
@@ -321,7 +359,7 @@ def main():
         logging.info(f'Argument parser said the program run in a normal mode')
         current_date = datetime.today().strftime('%Y-%m-%d')
         current_date_day_in_period = int(dct_day_period[current_date].split('= ')[1])
-        if not 6 <= current_date_day_in_period <= 20 or full_reboot:
+        if not 6 <= current_date_day_in_period <= 20 or full_reboot or specific_time == 'pregnancy':
             logging.info(f'Today is {current_date_day_in_period} day in period, full reboot is {full_reboot}, so run!')
             check_and_recreate_event(date_from=date_from_recreate_events, service=service,
                                      day_period_dict=dct_day_period, full_reboot=full_reboot)
