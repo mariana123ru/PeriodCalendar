@@ -187,7 +187,7 @@ def day_of_period_calculation(dct: dict, date_recreate: datetime) -> dict:
                         summary = dct[key]['summary'] + ': ' + summary
 
                 elif dct[key]['summary'] == '||':
-                    week_num = i // 7 + 1
+                    week_num = i // 7
                     if week_num <= 13:
                         trimester_num = 1
                     elif week_num <= 27:
@@ -223,9 +223,9 @@ def check_and_recreate_event(date_from: datetime, service, day_period_dict: dict
     from the dict is not the same as old one
     """
     dct_exist_events = {}
+    i = 0
     # event_extractor returns only first 250 events!
     while True:
-        i = 0
         extracted_events = event_extractor(calendar_id=CALENDAR_RED_DAYS, service=service, date_from=date_from)
         for key in extracted_events:
             dct_exist_events[key + i * 250] = extracted_events[key]
